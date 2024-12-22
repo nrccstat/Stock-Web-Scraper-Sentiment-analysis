@@ -10,6 +10,8 @@ import time
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
 from googlesearch import search
 import matplotlib.pyplot as plt
+import seaborn as sns
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 nltk.download('vader_lexicon')
 
@@ -21,7 +23,7 @@ class FinanceScraper:
         self.display_callback = display_callback
         self.sentiment_analyzer = SentimentIntensityAnalyzer()
         self.history = []
-  
+
     def analyze_sentiment(self, text):
         return self.sentiment_analyzer.polarity_scores(text)
 
@@ -40,7 +42,14 @@ class FinanceScraper:
                 sentiment = self.analyze_sentiment(summary)
 
                 self.display_callback(self.company, url, summary, sentiment)
-                self.history.append({"Title": self.company, "URL": url, "Summary": summary, **sentiment})
+                self.history.append({
+                    "Title": self.company,
+                    "URL": url,
+                    "Summary": summary,
+                    "Positive Words": [word for word, score in sentiment.items() if score > 0.05],
+                    "Negative Words": [word for word, score in sentiment.items() if score < -0.05],
+                    "Overall Sentiment": "Good" if sentiment['compound'] >= 0.05 else "Bad" if sentiment['compound'] <= -0.05 else "Moderate"
+                })
                 time.sleep(5)  # Display each result for 5 seconds
             except Exception as e:
                 print(f"Error processing {url}: {e}")
@@ -56,11 +65,10 @@ class FinanceScraper:
         history_df.to_csv(file_path, index=False)
         print(f"History exported to {file_path}")
 
-
 class StockScraperApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Advanced Text Manipulation Tool")
+        self.root.title("JLT Terminal")
         self.text_content = ""  # Variable to store all text
         self.chunk_size = 5000  # Display 5000 characters at a time
         self.current_position = 0  # Current starting index of text to display
@@ -251,7 +259,9 @@ class StockScraperApp:
             'Title': self.url_entry.get(),
             'URL': self.url_entry.get(),
             'Summary': self.text_content[:200],  # Summary is the first 200 characters
-            'Sentiment': overall_sentiment
+            'Positive Words': ', '.join(positive_words),
+            'Negative Words': ', '.join(negative_words),
+            'Overall Sentiment': overall_sentiment
         })
 
         # Create a new window
@@ -293,19 +303,23 @@ class StockScraperApp:
         history_window = tk.Toplevel()
         history_window.title("History of Loaded URLs and Sentiment Analysis")
 
-        columns = ("Title", "URL", "Summary", "Sentiment")
+        columns = ("Title", "URL", "Summary", "Positive Words", "Negative Words", "Overall Sentiment")
         tree = ttk.Treeview(history_window, columns=columns, show="headings")
         tree.heading("Title", text="Title")
         tree.heading("URL", text="URL")
         tree.heading("Summary", text="Summary")
-        tree.heading("Sentiment", text="Sentiment")
+        tree.heading("Positive Words", text="Positive Words")
+        tree.heading("Negative Words", text="Negative Words")
+        tree.heading("Overall Sentiment", text="Overall Sentiment")
 
         for entry in self.history:
             tree.insert("", tk.END, values=(
                 entry['Title'],
                 entry['URL'],
                 entry['Summary'],
-                entry['Sentiment']
+                entry['Positive Words'],
+                entry['Negative Words'],
+                entry['Overall Sentiment']
             ))
 
         tree.pack(fill=tk.BOTH, expand=True)
@@ -365,47 +379,79 @@ class StockScraperApp:
         tk.Button(auto_search_window, text="Start", command=start_search).pack(pady=10)
 
     def visualize_sentiment(self):
-        #if self.scraper:
-            sentiment_window = tk.Toplevel()
-            sentiment_window.title("Visualize Sentiment")
+        sentiment_window = tk.Toplevel()
+        sentiment_window.title("Visualize Sentiment")
 
-            import_button = tk.Button(sentiment_window, text="Import CSV", command=self.import_csv)
-            import_button.pack(pady=10)
+        import_button = tk.Button(sentiment_window, text="Import CSV", command=lambda: self.import_csv(sentiment_window))
+        import_button.pack(pady=10)
 
-    def import_csv(self):
+    def import_csv(self, sentiment_window):
         file_path = filedialog.askopenfilename(filetypes=[("CSV files", "*.csv")])
         if file_path:
             try:
                 df = pd.read_csv(file_path)
-                if 'pos' in df.columns and 'neg' in df.columns:
-                    plt.figure(figsize=(10, 6))
-                    plt.scatter(df['pos'], range(len(df)), color='green', label='Positive Sentiment')
-                    plt.scatter(df['neg'], range(len(df)), color='red', label='Negative Sentiment')
-                    plt.xlabel('Sentiment Score')
-                    plt.ylabel('Article Index')
-                    plt.title('Sentiment Analysis Results')
-                    plt.xticks([0, 0.5, 1], ['Neg', 'Neutral', 'Pos'])
-                    plt.legend()
-                    plt.grid(True)
-                    plt.show()
+                if 'Positive Words' in df.columns and 'Negative Words' in df.columns and 'Overall Sentiment' in df.columns:
+                    # Handle missing or NaN values
+                    df['Positive Words'] = df['Positive Words'].fillna('')
+                    df['Negative Words'] = df['Negative Words'].fillna('')
+
+                    df['Positive Word Count'] = df['Positive Words'].apply(lambda x: len(x.split(', ')) if x else 0)
+                    df['Negative Word Count'] = df['Negative Words'].apply(lambda x: len(x.split(', ')) if x else 0)
+
+                    sentiment_counts = df['Overall Sentiment'].value_counts()
+
+                    stats_text = f"Statistics:\n"
+                    stats_text += f"Mean Positive Words: {df['Positive Word Count'].mean()}\n"
+                    stats_text += f"Mean Negative Words: {df['Negative Word Count'].mean()}\n"
+                    stats_text += f"Median Positive Words: {df['Positive Word Count'].median()}\n"
+                    stats_text += f"Median Negative Words: {df['Negative Word Count'].median()}\n"
+                    stats_text += f"Total Articles: {len(df)}\n"
+                    stats_text += f"Sentiment Distribution:\n{sentiment_counts.to_string()}\n"
+
+                    stats_frame = tk.Frame(sentiment_window)
+                    stats_frame.pack(fill=tk.BOTH, expand=True)
+
+                    stats_label = tk.Label(stats_frame, text=stats_text, justify=tk.LEFT)
+                    stats_label.pack(padx=10, pady=10)
+
+                    # Create figure and plot
+                    fig, ax = plt.subplots(figsize=(10, 6))
+                    sns.histplot(df['Positive Word Count'], color='green', label='Positive Words', kde=True, ax=ax)
+                    sns.histplot(df['Negative Word Count'], color='red', label='Negative Words', kde=True, ax=ax)
+                    ax.set_xlabel('Number of Words')
+                    ax.set_ylabel('Frequency')
+                    ax.set_title('Distribution of Positive and Negative Words')
+                    ax.legend()
+
+                    # Create canvas and add to frame
+                    canvas = FigureCanvasTkAgg(fig, master=sentiment_window)
+                    canvas.draw()
+                    canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
                 else:
-                    messagebox.showerror("Error", "CSV file does not contain required columns 'pos' and 'neg'.")
+                    messagebox.showerror("Error", "CSV file does not contain required columns 'Positive Words', 'Negative Words', and 'Overall Sentiment'.")
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to import CSV: {e}")
-    
+
     def display_article(self, title, link, summary, sentiment):
         sentiment_str = f"Pos: {sentiment['pos']} | Neu: {sentiment['neu']} | Neg: {sentiment['neg']} | Compound: {sentiment['compound']}"
         self.text.config(state=tk.NORMAL)
         self.text.insert(tk.END, f"Title: {title}\nLink: {link}\nSummary: {summary}\nSentiment: {sentiment_str}\n\n")
         self.text.config(state=tk.DISABLED)
-        self.history.append({"Title": title, "URL": link, "Summary": summary, **sentiment})
+        self.history.append({
+            "Title": title,
+            "URL": link,
+            "Summary": summary,
+            "Positive Words": ', '.join([word for word, score in sentiment.items() if score > 0.05]),
+            "Negative Words": ', '.join([word for word, score in sentiment.items() if score < -0.05]),
+            "Overall Sentiment": "Good" if sentiment['compound'] >= 0.05 else "Bad" if sentiment['compound'] <= -0.05 else "Moderate"
+        })
 
     def stop_auto_search(self):
         if self.scraper:
             self.scraper_thread.join()
             self.scraper = None
             messagebox.showinfo("Stopped", "Automatic search stopped.")
-
 
 root = tk.Tk()
 app = StockScraperApp(root)
