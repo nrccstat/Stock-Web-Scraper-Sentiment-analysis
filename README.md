@@ -155,7 +155,7 @@ Please ensure your code follows Python best practices, includes comments, and ma
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
 
 ## Contact
-For questions or support, please contact [Your Name] at [your.email@example.com] or open an issue on the repository.
+For questions or support, please contact Narasimha at naci@ad.unc.edu or open an issue on the repository.
 
 ---
 
