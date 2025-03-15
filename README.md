@@ -159,13 +159,4 @@ For questions or support, please contact [Your Name] at [your.email@example.com]
 
 ---
 
-### Notes for You
-- **Customization**: Replace `<repository-url>`, `[Your Name]`, and `[your.email@example.com]` with your actual details.
-- **Enhancement Suggestions**:
-  - Add real-time sentiment visualization for the current session.
-  - Implement caching to reduce repeated web requests.
-  - Enhance error handling with user-friendly messages.
-  - Support additional file formats (e.g., JSON, Excel).
-- **Dependencies**: Ensure all required libraries are installed as per the prerequisites. The `googlesearch-python` library may require an API key or proxy for heavy use due to Google’s terms.
-- **File Name**: Save this as `README.md` in your project directory, and replace `main.py` with your script’s name if different.
 
