@@ -5,15 +5,15 @@ import requests
 import re
 from bs4 import BeautifulSoup
 import threading
-import nltk
 import time
-from nltk.sentiment.vader import SentimentIntensityAnalyzer
 from googlesearch import search
 import matplotlib.pyplot as plt
 import seaborn as sns
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-
-nltk.download('vader_lexicon')
+import random
+import PyPDF2
+import traceback
+from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipeline
 
 class FinanceScraper:
     def __init__(self, company, nasdaq_code, seo_words, display_callback):
@@ -21,38 +21,73 @@ class FinanceScraper:
         self.nasdaq_code = nasdaq_code
         self.seo_words = seo_words
         self.display_callback = display_callback
-        self.sentiment_analyzer = SentimentIntensityAnalyzer()
         self.history = []
+        self.user_agents = [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Safari/605.1.15',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/88.0.4324.96 Safari/537.36',
+            'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15A372 Safari/604.1',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0',
+            'Mozilla/5.0 (Linux; Android 10; SM-G975F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/83.0.4103.106 Mobile Safari/537.36',
+        ]
 
-    def analyze_sentiment(self, text):
-        return self.sentiment_analyzer.polarity_scores(text)
+    def get_random_user_agent(self):
+        return random.choice(self.user_agents)
 
     def fetch_article_summary(self, url):
-        response = requests.get(url)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        paragraphs = soup.find_all('p')
-        summary = ' '.join([para.get_text() for para in paragraphs])
-        return summary
+        headers = {'User-Agent': self.get_random_user_agent()}
+        try:
+            response = requests.get(url, headers=headers)
+            soup = BeautifulSoup(response.text, 'html.parser')
+            paragraphs = soup.find_all('p')
+            summary = ' '.join([para.get_text() for para in paragraphs])
+            return summary
+        except Exception as e:
+            print(f"Error fetching article: {e}")
+            return ""
 
     def scrape_google_search(self):
         query = f"{self.company} {self.nasdaq_code} {' '.join(self.seo_words)} finance news"
-        for url in search(query, num_results=10):
-            try:
-                summary = self.fetch_article_summary(url)
-                sentiment = self.analyze_sentiment(summary)
-
-                self.display_callback(self.company, url, summary, sentiment)
-                self.history.append({
-                    "Title": self.company,
-                    "URL": url,
-                    "Summary": summary,
-                    "Positive Words": [word for word, score in sentiment.items() if score > 0.05],
-                    "Negative Words": [word for word, score in sentiment.items() if score < -0.05],
-                    "Overall Sentiment": "Good" if sentiment['compound'] >= 0.05 else "Bad" if sentiment['compound'] <= -0.05 else "Moderate"
-                })
-                time.sleep(5)  # Display each result for 5 seconds
-            except Exception as e:
-                print(f"Error processing {url}: {e}")
+        print(f"Starting search with query: {query}")
+        time.sleep(random.uniform(2, 5))
+        try:
+            urls = []
+            for url in search(query, num_results=10):
+                urls.append(url)
+                time.sleep(random.uniform(3, 7))
+            print(f"Found {len(urls)} URLs to process")
+            for url in urls:
+                try:
+                    print(f"Processing URL: {url}")
+                    time.sleep(random.uniform(2, 4))
+                    headers = {'User-Agent': self.get_random_user_agent()}
+                    response = requests.get(url, headers=headers, timeout=10)
+                    response.raise_for_status()
+                    soup = BeautifulSoup(response.text, 'html.parser')
+                    paragraphs = soup.find_all('p')
+                    summary = ' '.join([para.get_text().strip() for para in paragraphs if para.get_text().strip()])
+                    if summary and len(summary.strip()) > 0:
+                        self.display_callback(self.company, url, summary)
+                        self.history.append({
+                            "Title": self.company,
+                            "URL": url,
+                            "Summary": summary
+                        })
+                        print(f"Successfully processed URL: {url}")
+                    else:
+                        print(f"No content found for URL: {url}")
+                    time.sleep(random.uniform(5, 10))
+                except requests.exceptions.RequestException as e:
+                    print(f"Request error for {url}: {e}")
+                    time.sleep(random.uniform(10, 15))
+                    continue
+                except Exception as e:
+                    print(f"Error processing {url}: {e}")
+                    time.sleep(random.uniform(10, 15))
+                    continue
+        except Exception as e:
+            print(f"Error in scrape_google_search: {e}")
+            time.sleep(random.uniform(15, 20))
 
     def start_scraping(self, interval, duration):
         end_time = time.time() + duration * 60
@@ -69,17 +104,31 @@ class StockScraperApp:
     def __init__(self, root):
         self.root = root
         self.root.title("JLT Terminal")
-        self.text_content = ""  # Variable to store all text
-        self.chunk_size = 5000  # Display 5000 characters at a time
-        self.current_position = 0  # Current starting index of text to display
-        self.history = []  # List to store history of URL loads and sentiment analysis
+        self.text_content = ""
+        self.chunk_size = 5000
+        self.current_position = 0
+        self.history = []
         self.scraper_thread = None
         self.scraper = None
-
+        self.sentiment_model = None
+        self.sentiment_tokenizer = None
+        self.sentiment_pipeline = None
+        self.model_load_error = None
+        self.last_sentiment_results = None
+        self._load_sentiment_model()
         self.setup_frames()
         self.setup_buttons()
         self.setup_text_display()
         self.setup_icon()
+
+    def _load_sentiment_model(self):
+        try:
+            self.sentiment_tokenizer = AutoTokenizer.from_pretrained("ProsusAI/finbert")
+            self.sentiment_model = AutoModelForSequenceClassification.from_pretrained("ProsusAI/finbert")
+            self.sentiment_pipeline = pipeline("sentiment-analysis", model=self.sentiment_model, tokenizer=self.sentiment_tokenizer)
+        except Exception as e:
+            self.model_load_error = str(e)
+            print(f"[ERROR] Failed to load FinBERT model: {e}")
 
     def setup_frames(self):
         self.left_frame = tk.Frame(self.root, width=200, relief=tk.RAISED, borderwidth=2, bg='white')
@@ -88,22 +137,28 @@ class StockScraperApp:
         self.right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
 
     def setup_buttons(self):
-        tk.Label(self.left_frame, text="Enter URL or Select File:", bg='white').pack(fill=tk.X, padx=5)
+        tk.Label(self.left_frame, text="Select File:", bg='white').pack(fill=tk.X, padx=5)
         self.url_entry = tk.Entry(self.left_frame, width=20)
         self.url_entry.pack(fill=tk.X, padx=5)
         self.add_buttons()
 
     def add_buttons(self):
-        commands = [("Load URL", self.load_from_url), ("Select File", self.load_from_file),
-                    ("Batch Process URLs", self.process_url_list), ("Find and Replace", self.find_replace),
-                    ("Highlight Text", self.highlight_text), ("Unhighlight Text", self.unhighlight_text),
-                    ("Select HTML Elements", self.select_html_elements),
-                    ("Auto-Detect Tables", self.auto_detect_tables),
-                    ("Sentiment Analysis", self.perform_sentiment_analysis), ("Display Words", self.display_words),
-                    ("Show History", self.show_history), ("Start Auto Search", self.start_auto_search),
-                    ("Stop Auto Search", self.stop_auto_search), ("Visualize Sentiment", self.visualize_sentiment)]
+        commands = [
+            ("Select File", self.load_from_file),
+            ("Highlight Text", self.highlight_text),
+            ("Unhighlight Text", self.unhighlight_text),
+            ("Clear Screen", self.clear_screen),
+            ("Sentiment Analysis", self.perform_sentiment_analysis),
+            ("Visualize Sentiment", self.visualize_sentiment)
+        ]
         for (text, command) in commands:
             tk.Button(self.left_frame, text=text, command=command, bg='red', fg='white').pack(fill=tk.X, padx=5, pady=5)
+
+    def clear_screen(self):
+        self.text_content = ""
+        self.text.config(state=tk.NORMAL)
+        self.text.delete(1.0, tk.END)
+        self.text.config(state=tk.DISABLED)
 
     def setup_text_display(self):
         self.text = scrolledtext.ScrolledText(self.right_frame, wrap=tk.WORD, bg='black', fg='white')
@@ -113,43 +168,52 @@ class StockScraperApp:
         canvas = Canvas(self.left_frame, width=20, height=20, bg='white', highlightthickness=0)
         canvas.pack(side=tk.BOTTOM, pady=10, expand=True)
 
-    def load_from_url(self):
-        url = self.url_entry.get()
-        threading.Thread(target=self.fetch_and_display_url, args=(url,)).start()
-
     def load_from_file(self):
         file_path = filedialog.askopenfilename()
         if file_path:
-            threading.Thread(target=self.read_file, args=(file_path,)).start()
+            threading.Thread(target=self.read_file_thread, args=(file_path,)).start()
 
-    def fetch_and_display_url(self, url):
-        try:
-            response = requests.get(url)
-            self.text_content = response.text
-            self.current_position = 0
-            self.update_text_display()
-            self.perform_sentiment_analysis()
-        except requests.exceptions.RequestException as e:
-            messagebox.showerror("Error", f"Failed to load URL: {e}")
-
-    def read_file(self, file_path):
+    def read_file_thread(self, file_path):
         try:
             if file_path.endswith('.csv'):
-                df = pd.read_csv(file_path)
-                self.text_content = df.to_string()
+                df = pd.read_csv(file_path, encoding='utf-8')
+                text_content = df.to_string()
+            elif file_path.endswith('.pdf'):
+                with open(file_path, 'rb') as file:
+                    reader = PyPDF2.PdfReader(file)
+                    text = ''
+                    for page in reader.pages:
+                        text += page.extract_text() or ''
+                    text_content = text
             else:
-                with open(file_path, 'r', encoding='utf-8') as file:
-                    self.text_content = file.read()
-            self.current_position = 0
-            self.update_text_display()
+                with open(file_path, 'r', encoding='utf-8', errors='replace') as file:
+                    text_content = file.read()
+            self.root.after(0, lambda: self.on_file_loaded(text_content))
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to read file: {e}")
+            print("[ERROR] Failed to read file:")
+            traceback.print_exc()
+            self.root.after(0, lambda: messagebox.showerror("Error", f"Failed to read file: {e}"))
+
+    def on_file_loaded(self, text_content):
+        self.text_content = text_content
+        self.current_position = 0
+        self.update_text_display()
+        print("\n--- Loaded Text Content ---\n")
+        try:
+            print(self.text_content.encode('utf-8', errors='replace').decode('utf-8'))
+        except Exception as e:
+            print(f"[ERROR] Could not print text content: {e}")
+        self.root.after(0, lambda: self.perform_sentiment_analysis(auto=True, print_to_terminal=True))
 
     def update_text_display(self):
         if self.text_content:
             self.text.config(state=tk.NORMAL)
             self.text.delete(1.0, tk.END)
-            self.text.insert(tk.END, self.text_content[self.current_position:self.current_position + self.chunk_size])
+            try:
+                self.text.insert(tk.END, self.text_content[self.current_position:self.current_position + self.chunk_size])
+            except Exception:
+                safe_text = self.text_content[self.current_position:self.current_position + self.chunk_size].encode('utf-8', errors='replace').decode('utf-8')
+                self.text.insert(tk.END, safe_text)
             self.text.config(state=tk.DISABLED)
         else:
             messagebox.showerror("Error", "No content to display.")
@@ -174,7 +238,7 @@ class StockScraperApp:
                 end_pos = f"{start_pos}+{len(word_to_highlight)}c"
                 self.text.tag_add("highlight", start_pos, end_pos)
                 start_pos = end_pos
-            self.text.tag_config("highlight", background="yellow")
+            self.text.tag_config("highlight", background="yellow", foreground="black")
 
     def unhighlight_text(self):
         self.text.tag_remove("highlight", "1.0", tk.END)
@@ -191,253 +255,147 @@ class StockScraperApp:
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to select HTML elements: {e}")
 
-    def auto_detect_tables(self):
-        try:
-            soup = BeautifulSoup(self.text_content, 'html.parser')
-            tables = soup.find_all('table')
-            tables_text = "\n\n".join([str(table) for table in tables])
-            self.text_content = tables_text
-            self.update_text_display()
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to auto-detect tables: {e}")
-
-    def process_url_list(self):
-        url_file = filedialog.askopenfilename(filetypes=[("Text files", "*.txt"), ("CSV files", "*.csv")])
-        if url_file:
-            try:
-                urls = []
-                if url_file.endswith('.csv'):
-                    df = pd.read_csv(url_file)
-                    urls = df.iloc[:, 0].tolist()
-                else:
-                    with open(url_file, 'r') as file:
-                        urls = file.readlines()
-
-                for url in urls:
-                    self.fetch_and_display_url(url.strip())
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to process URL list: {e}")
-
-    def perform_sentiment_analysis(self):
-        if not self.text_content:
-            messagebox.showerror("Error", "No content loaded. Please load a URL or file first.")
+    def export_sentiment_csv(self):
+        if not hasattr(self, 'last_sentiment_results') or not self.last_sentiment_results:
+            messagebox.showerror("Error", "No sentiment analysis results to export.")
             return
+        file_path = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV files", "*.csv")])
+        if file_path:
+            try:
+                df = pd.DataFrame(self.last_sentiment_results)
+                df.to_csv(file_path, index=False)
+                messagebox.showinfo("Export Successful", f"Sentiment results exported to {file_path}")
+            except Exception as e:
+                messagebox.showerror("Export Error", f"Failed to export CSV: {e}")
 
-        if not hasattr(self, 'word_list') or not self.word_list:
-            self.display_words()
-
-        sid = SentimentIntensityAnalyzer()
-        positive_words = []
-        negative_words = []
-
-        for word in self.word_list:
-            sentiment = sid.polarity_scores(word)
-            if sentiment['compound'] >= 0.05:
-                positive_words.append(word)
-            elif sentiment['compound'] <= -0.05:
-                negative_words.append(word)
-
-        positive_df = pd.DataFrame(positive_words, columns=['Word'])
-        negative_df = pd.DataFrame(negative_words, columns=['Word'])
-
-        positive_df['Frequency'] = positive_df['Word'].map(positive_df['Word'].value_counts())
-        negative_df['Frequency'] = negative_df['Word'].map(negative_df['Word'].value_counts())
-
-        positive_output = "Positive Words:\n" + positive_df.to_string(index=False)
-        negative_output = "\nNegative Words:\n" + negative_df.to_string(index=False)
-
-        # Determine overall sentiment
-        if len(positive_words) > len(negative_words):
-            overall_sentiment = "Good"
-        elif len(positive_words) < len(negative_words):
-            overall_sentiment = "Bad"
+    def perform_sentiment_analysis(self, auto=False, print_to_terminal=False):
+        import numpy as np
+        if not self.text_content:
+            messagebox.showerror("Error", "No content loaded. Please load a file first.")
+            return
+        if self.model_load_error:
+            messagebox.showerror("Model Load Error", f"Failed to load FinBERT model: {self.model_load_error}")
+            return
+        if not self.sentiment_pipeline:
+            messagebox.showerror("Model Error", "FinBERT sentiment pipeline is not available.")
+            return
+        soup = BeautifulSoup(self.text_content, 'html.parser')
+        webpage_text = soup.get_text()
+        sentences = [s.strip() for s in re.split(r'[.!?]', webpage_text) if s.strip()]
+        if not sentences:
+            messagebox.showerror("Error", "No sentences found for sentiment analysis.")
+            return
+        sentiments = []
+        pos_count, neg_count, neu_count = 0, 0, 0
+        sentiment_records = []
+        sentiment_numeric = []
+        weighted_sum = 0
+        weighted_total = 0
+        for idx, sent in enumerate(sentences):
+            try:
+                result = self.sentiment_pipeline(sent[:512])[0]
+                sentiments.append(result)
+                label = result['label'].upper()
+                score = result['score']
+                sentiment_records.append({
+                    'Sentence': sent,
+                    'Sentiment': label,
+                    'Score': score
+                })
+                if label == 'POSITIVE':
+                    pos_count += 1
+                    sentiment_numeric.append(1)
+                elif label == 'NEGATIVE':
+                    neg_count += 1
+                    sentiment_numeric.append(-1)
+                else:
+                    neu_count += 1
+                    sentiment_numeric.append(0)
+                if label == 'POSITIVE':
+                    weighted_sum += score * 1
+                elif label == 'NEGATIVE':
+                    weighted_sum += score * -1
+                weighted_total += score
+            except Exception as e:
+                print(f"[ERROR] Sentiment analysis failed for sentence: {sent}\n{e}")
+                continue
+        total = max(1, len(sentiments))
+        pos_ratio = pos_count / total
+        neg_ratio = neg_count / total
+        neu_ratio = neu_count / total
+        overall_score = np.mean(sentiment_numeric) if sentiment_numeric else 0
+        volatility = np.std(sentiment_numeric) if sentiment_numeric else 0
+        weighted_sentiment = weighted_sum / weighted_total if weighted_total > 0 else 0
+        half = len(sentiment_numeric) // 2
+        first_half_score = np.mean(sentiment_numeric[:half]) if half > 0 else 0
+        second_half_score = np.mean(sentiment_numeric[half:]) if half > 0 else 0
+        momentum = second_half_score - first_half_score
+        if pos_ratio > neg_ratio and pos_ratio > neu_ratio:
+            stock_msg = "Stock likely to go up."
+        elif neg_ratio > pos_ratio and neg_ratio > neu_ratio:
+            stock_msg = "Stock likely to go down."
         else:
-            overall_sentiment = "Moderate"
-
-        # Store results in history
-        self.history.append({
-            'Title': self.url_entry.get(),
-            'URL': self.url_entry.get(),
-            'Summary': self.text_content[:200],  # Summary is the first 200 characters
-            'Positive Words': ', '.join(positive_words),
-            'Negative Words': ', '.join(negative_words),
-            'Overall Sentiment': overall_sentiment
-        })
-
-        # Create a new window
+            stock_msg = "Stock likely to remain stable."
+        sentiment_msg = (
+            f"FinBERT Sentiment Analysis:\n"
+            f"Positive: {pos_count} ({pos_ratio:.2%}) | Negative: {neg_count} ({neg_ratio:.2%}) | Neutral: {neu_count} ({neu_ratio:.2%})\n"
+            f"\nMath-based Sentiment Metrics:\n"
+            f"Overall Score (mean): {overall_score:.2f}\n"
+            f"Weighted Sentiment: {weighted_sentiment:.2f}\n"
+            f"Sentiment Volatility (std): {volatility:.2f}\n"
+            f"Momentum (2nd half - 1st half): {momentum:.2f}\n"
+            f"\n{stock_msg}"
+        )
+        self.last_sentiment_results = sentiment_records
+        if print_to_terminal:
+            print("\n--- FinBERT Sentiment Analysis Result ---\n")
+            print(sentiment_msg)
         sentiment_window = tk.Toplevel()
-        sentiment_window.title("Sentiment Analysis Results")
-
-        # Create text widget to display results
-        results_text = tk.Text(sentiment_window)
-        results_text.insert(tk.END, positive_output + "\n" + negative_output)
-        results_text.pack()
-
+        sentiment_window.title("Sentiment Analysis Results (FinBERT)")
+        results_text = tk.Text(sentiment_window, wrap=tk.WORD)
+        results_text.insert(tk.END, sentiment_msg)
+        results_text.pack(fill=tk.BOTH, expand=True)
         sentiment_window.mainloop()
 
-    def display_words(self):
-        try:
-            if self.text_content:
-                # Get the webpage text content
-                soup = BeautifulSoup(self.text_content, 'html.parser')
-                webpage_text = soup.get_text()
-
-                # Split the text into words
-                self.word_list = re.findall(r'\w+', webpage_text)
-
-                # Create a new window to display the words
-                display_window = tk.Toplevel(self.root)
-                display_window.title("Words from URL")
-                text_box = scrolledtext.ScrolledText(display_window, wrap=tk.WORD)
-
-                # Insert the words into the text box
-                word_list_str = '\n'.join(self.word_list)
-                text_box.insert(tk.END, word_list_str)
-                text_box.pack(fill=tk.BOTH, expand=True)
-            else:
-                messagebox.showerror("Error", "No content loaded. Please load a URL first.")
-        except Exception as e:
-            messagebox.showerror("Error", f"An error occurred: {e}")
-
-    def show_history(self):
-        history_window = tk.Toplevel()
-        history_window.title("History of Loaded URLs and Sentiment Analysis")
-
-        columns = ("Title", "URL", "Summary", "Positive Words", "Negative Words", "Overall Sentiment")
-        tree = ttk.Treeview(history_window, columns=columns, show="headings")
-        tree.heading("Title", text="Title")
-        tree.heading("URL", text="URL")
-        tree.heading("Summary", text="Summary")
-        tree.heading("Positive Words", text="Positive Words")
-        tree.heading("Negative Words", text="Negative Words")
-        tree.heading("Overall Sentiment", text="Overall Sentiment")
-
-        for entry in self.history:
-            tree.insert("", tk.END, values=(
-                entry['Title'],
-                entry['URL'],
-                entry['Summary'],
-                entry['Positive Words'],
-                entry['Negative Words'],
-                entry['Overall Sentiment']
-            ))
-
-        tree.pack(fill=tk.BOTH, expand=True)
-
-        export_button = tk.Button(history_window, text="Export to CSV", command=self.export_history)
-        export_button.pack(pady=10)
-
-    def export_history(self):
-        if not self.history:
-            messagebox.showerror("Error", "No history to export.")
-            return
-
-        file_path = filedialog.asksaveasfilename(defaultextension=".csv",
-                                                 filetypes=[("CSV files", "*.csv")],
-                                                 title="Save history as CSV")
-        if file_path:
-            history_df = pd.DataFrame(self.history)
-            history_df.to_csv(file_path, index=False)
-            messagebox.showinfo("Success", f"History exported to {file_path}")
-
-    def start_auto_search(self):
-        auto_search_window = tk.Toplevel(self.root)
-        auto_search_window.title("Start Automatic Search")
-
-        tk.Label(auto_search_window, text="Company Name:").pack(fill=tk.X, padx=5, pady=5)
-        company_name_entry = tk.Entry(auto_search_window)
-        company_name_entry.pack(fill=tk.X, padx=5, pady=5)
-
-        tk.Label(auto_search_window, text="NASDAQ Code:").pack(fill=tk.X, padx=5, pady=5)
-        nasdaq_code_entry = tk.Entry(auto_search_window)
-        nasdaq_code_entry.pack(fill=tk.X, padx=5, pady=5)
-
-        tk.Label(auto_search_window, text="SEO Words (comma separated):").pack(fill=tk.X, padx=5, pady=5)
-        seo_words_entry = tk.Entry(auto_search_window)
-        seo_words_entry.pack(fill=tk.X, padx=5, pady=5)
-
-        tk.Label(auto_search_window, text="Interval (seconds):").pack(fill=tk.X, padx=5, pady=5)
-        interval_entry = tk.Entry(auto_search_window)
-        interval_entry.pack(fill=tk.X, padx=5, pady=5)
-
-        tk.Label(auto_search_window, text="Duration (minutes):").pack(fill=tk.X, padx=5, pady=5)
-        duration_entry = tk.Entry(auto_search_window)
-        duration_entry.pack(fill=tk.X, padx=5, pady=5)
-
-        def start_search():
-            company = company_name_entry.get()
-            nasdaq_code = nasdaq_code_entry.get()
-            seo_words = seo_words_entry.get().split(',')
-            interval = int(interval_entry.get())
-            duration = int(duration_entry.get())
-
-            self.scraper = FinanceScraper(company, nasdaq_code, seo_words, self.display_article)
-            self.scraper_thread = threading.Thread(target=self.scraper.start_scraping, args=(interval, duration))
-            self.scraper_thread.start()
-            auto_search_window.destroy()
-
-        tk.Button(auto_search_window, text="Start", command=start_search).pack(pady=10)
-
     def visualize_sentiment(self):
+        if not hasattr(self, 'last_sentiment_results') or not self.last_sentiment_results:
+            messagebox.showerror("Error", "No sentiment analysis results to visualize.")
+            return
         sentiment_window = tk.Toplevel()
         sentiment_window.title("Visualize Sentiment")
-
-        import_button = tk.Button(sentiment_window, text="Import CSV", command=lambda: self.import_csv(sentiment_window))
-        import_button.pack(pady=10)
-
-    def import_csv(self, sentiment_window):
-        file_path = filedialog.askopenfilename(filetypes=[("CSV files", "*.csv")])
-        if file_path:
-            try:
-                df = pd.read_csv(file_path)
-                if 'Positive Words' in df.columns and 'Negative Words' in df.columns and 'Overall Sentiment' in df.columns:
-                    # Handle missing or NaN values
-                    df['Positive Words'] = df['Positive Words'].fillna('')
-                    df['Negative Words'] = df['Negative Words'].fillna('')
-
-                    df['Positive Word Count'] = df['Positive Words'].apply(lambda x: len(x.split(', ')) if x else 0)
-                    df['Negative Word Count'] = df['Negative Words'].apply(lambda x: len(x.split(', ')) if x else 0)
-
-                    sentiment_counts = df['Overall Sentiment'].value_counts()
-
-                    stats_text = f"Statistics:\n"
-                    stats_text += f"Mean Positive Words: {df['Positive Word Count'].mean()}\n"
-                    stats_text += f"Mean Negative Words: {df['Negative Word Count'].mean()}\n"
-                    stats_text += f"Median Positive Words: {df['Positive Word Count'].median()}\n"
-                    stats_text += f"Median Negative Words: {df['Negative Word Count'].median()}\n"
-                    stats_text += f"Total Articles: {len(df)}\n"
-                    stats_text += f"Sentiment Distribution:\n{sentiment_counts.to_string()}\n"
-
-                    stats_frame = tk.Frame(sentiment_window)
-                    stats_frame.pack(fill=tk.BOTH, expand=True)
-
-                    stats_label = tk.Label(stats_frame, text=stats_text, justify=tk.LEFT)
-                    stats_label.pack(padx=10, pady=10)
-
-                    # Create figure and plot
-                    fig, ax = plt.subplots(figsize=(10, 6))
-                    sns.histplot(df['Positive Word Count'], color='green', label='Positive Words', kde=True, ax=ax)
-                    sns.histplot(df['Negative Word Count'], color='red', label='Negative Words', kde=True, ax=ax)
-                    ax.set_xlabel('Number of Words')
-                    ax.set_ylabel('Frequency')
-                    ax.set_title('Distribution of Positive and Negative Words')
-                    ax.legend()
-
-                    # Create canvas and add to frame
-                    canvas = FigureCanvasTkAgg(fig, master=sentiment_window)
-                    canvas.draw()
-                    canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-
-                else:
-                    messagebox.showerror("Error", "CSV file does not contain required columns 'Positive Words', 'Negative Words', and 'Overall Sentiment'.")
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to import CSV: {e}")
+        df = pd.DataFrame(self.last_sentiment_results)
+        sentiment_counts = df['Sentiment'].value_counts()
+        stats_text = f"Statistics:\n"
+        stats_text += f"Total Sentences: {len(df)}\n"
+        stats_text += f"Sentiment Distribution:\n{sentiment_counts.to_string()}\n"
+        stats_frame = tk.Frame(sentiment_window)
+        stats_frame.pack(fill=tk.BOTH, expand=True)
+        stats_label = tk.Label(stats_frame, text=stats_text, justify=tk.LEFT)
+        stats_label.pack(padx=10, pady=10)
+        fig, ax = plt.subplots(figsize=(8, 5))
+        sns.countplot(x='Sentiment', data=df, palette='Set2', ax=ax)
+        ax.set_title('Sentiment Distribution')
+        canvas = FigureCanvasTkAgg(fig, master=sentiment_window)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
     def display_article(self, title, link, summary, sentiment):
-        sentiment_str = f"Pos: {sentiment['pos']} | Neu: {sentiment['neu']} | Neg: {sentiment['neg']} | Compound: {sentiment['compound']}"
+        sentiment_str = f"Pos: {sentiment['pos']:.2f} | Neu: {sentiment['neu']:.2f} | Neg: {sentiment['neg']:.2f} | Compound: {sentiment['compound']:.2f}"
+        
+        display_text = f"\n{'='*80}\n"
+        display_text += f"Title: {title}\n"
+        display_text += f"Link: {link}\n"
+        display_text += f"Summary: {summary[:500]}...\n"
+        display_text += f"Sentiment: {sentiment_str}\n"
+        display_text += f"{'='*80}\n"
+
         self.text.config(state=tk.NORMAL)
-        self.text.insert(tk.END, f"Title: {title}\nLink: {link}\nSummary: {summary}\nSentiment: {sentiment_str}\n\n")
+        self.text.insert(tk.END, display_text)
+        self.text.see(tk.END)
         self.text.config(state=tk.DISABLED)
+        
+        self.root.update_idletasks()
+        
         self.history.append({
             "Title": title,
             "URL": link,
@@ -446,12 +404,8 @@ class StockScraperApp:
             "Negative Words": ', '.join([word for word, score in sentiment.items() if score < -0.05]),
             "Overall Sentiment": "Good" if sentiment['compound'] >= 0.05 else "Bad" if sentiment['compound'] <= -0.05 else "Moderate"
         })
-
-    def stop_auto_search(self):
-        if self.scraper:
-            self.scraper_thread.join()
-            self.scraper = None
-            messagebox.showinfo("Stopped", "Automatic search stopped.")
+        
+        print(f"Displayed article: {title}")
 
 root = tk.Tk()
 app = StockScraperApp(root)
