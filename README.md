@@ -1,4 +1,4 @@
-# JLT Terminal: Financial News & Sentiment Analysis App
+# FinBERT sentiment app
 
 ## Overview
 JLT Terminal is a Tkinter-based desktop application for scraping, loading, and analyzing financial news and documents (including PDFs) with advanced sentiment analysis. It uses Hugging Face's FinBERT transformer model for finance-specific sentiment, and provides in-depth mathematical/statistical metrics for each analysis.
